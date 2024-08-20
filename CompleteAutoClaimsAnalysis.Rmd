@@ -1,0 +1,387 @@
+
+---
+title: "Auto Insurance Claims Analysis"
+author: "Arian Farahani"
+date: "2024-08-01"
+output:
+  html_document: default
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+## Objective
+The goal of this analysis is to identify and analyze the key factors that influence the amount of insurance claims. 
+
+### Questions to Answer:
+1. What are the most significant predictors of claim amounts?
+2. How do different policy types and customer demographics affect claim amounts?
+
+
+```{r setup, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load libraries 
+library(tidyverse)      # Data manipulation and visualization
+library(caret)          # Data partitioning and modeling
+library(rpart)          # Decision tree model
+library(rpart.plot)     # Plotting decision trees
+library(ggcorrplot)     # Correlation matrix visualization
+library(fastDummies)    # Create dummy variables
+```
+
+## Load Data
+
+```{r load-data}
+# Import the data set
+autoClaims <- read_csv("AutoClaims.csv")  
+```
+
+## Exploratory Data Analysis (EDA)
+
+### Descriptive Statistics
+
+```{r descriptive-stats}
+# Summary statistics for all variables
+summary(autoClaims)  
+```
+
+### Handle Missing Values
+
+```{r handle-missing}
+any_na <- any(is.na(autoClaims))  # Check for missing values
+if(any_na) {
+  clean_autoClaims <- na.omit(autoClaims)  # Remove missing values if present
+  print("Data contained missing values and they were removed.")
+} else {
+  # Use original data set if no missing values
+  print("Data is clean with no missing values.")
+}
+```
+
+### Distribution Plots
+
+#### Histogram for AGE
+
+```{r distribution-age}
+ggplot(autoClaims, aes(x = AGE)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "black") +
+  labs(title = "Distribution of Age", x = "Age", y = "Frequency")
+```
+
+#### Histogram for PAID (Claim Amount)
+
+```{r distribution-paid}
+ggplot(autoClaims, aes(x = PAID)) +
+  geom_histogram(binwidth = 500, fill = "green", color = "black") +
+  labs(title = "Distribution of Claim Amounts", x = "Claim Amount", y = "Frequency")
+```
+
+#### Histogram for log(AGE)
+
+```{r distribution-log(AGE)}
+# distribution of log AGE 
+ggplot(autoClaims, aes(x = log(AGE))) +
+  geom_histogram(binwidth = .05, 
+                 fill = "brown", 
+                 color = "black") +
+  labs(title = "Distribution of logAGE", 
+       x = "logAGE", 
+       y = "Frequency")
+
+```
+
+#### Histogram for log(PAID)
+
+```{r distribution-log(PAID)}
+# distribution of log PAID 
+ggplot(autoClaims, aes(x = log(PAID))) +
+  geom_histogram(binwidth = .05, 
+                 fill = "orange", 
+                 color = "black") +
+  labs(title = "Distribution of logPAID", 
+       x = "logPAID", 
+       y = "Frequency")
+
+```
+
+## Feature Engineering
+
+### Subset Data by Age Groups
+
+```{r subset-data}
+# Subset data into specific age ranges
+fiftiesToSixties <- autoClaims %>%
+  filter(AGE >= 50 & AGE < 70)  
+
+seventiesToEighties <- autoClaims %>%
+  filter(AGE >= 70 & AGE < 90)
+
+nineties <- autoClaims %>%
+  filter(AGE >= 90)
+
+# Graph each age group to claims
+ggplot(fiftiesToSixties, aes(AGE, PAID)) +
+  geom_point()  # Plot points for fifties to sixties
+
+ggplot(seventiesToEighties, aes(AGE, PAID)) + 
+  geom_point()  # Plot points for seventies to eighties
+
+ggplot(nineties, aes(AGE, PAID)) + 
+  geom_point()  # Plot points for nineties
+```
+
+### Create Age Groups
+
+```{r create-age-groups}
+autoClaims <- autoClaims %>%
+  mutate(age_group = case_when(
+    AGE >= 50 & AGE < 60 ~ "Fifties",
+    AGE >= 60 & AGE < 70 ~ "Sixties",
+    AGE >= 70 & AGE < 80 ~ "Seventies",
+    AGE >= 80 & AGE < 90 ~ "Eighties",
+    AGE >= 90 ~ "Nineties"
+  ))  # Create age group categories
+
+# Ensure age groups are factors with correct order
+myLevels <- c("Fifties", "Sixties", "Seventies", "Eighties", "Nineties")
+autoClaims$age_group <- ordered(autoClaims$age_group, levels = myLevels)
+
+# Visualize claim amounts by age group
+ggplot(autoClaims, aes(age_group, PAID)) +
+  geom_boxplot() +
+  labs(title = "Claims Paid by Age Group", x = "Age Groups", y = "Claims Paid")
+```
+### Summary Statistics by Age Group
+
+```{r summary-stats-age-group}
+# Summary statistics for each age group
+summary(autoClaims[autoClaims$age_group == "Fifties", "PAID"])
+summary(autoClaims[autoClaims$age_group == "Sixties", "PAID"])
+summary(autoClaims[autoClaims$age_group == "Seventies", "PAID"])
+summary(autoClaims[autoClaims$age_group == "Eighties", "PAID"])
+summary(autoClaims[autoClaims$age_group == "Nineties", "PAID"])
+
+```
+
+### Dummification of Categorical Variables
+```{r dummification}
+# Convert categorical variables into dummy variables and remove original columns
+autoClaims_dummies <- autoClaims %>%
+  mutate(across(c(CLASS, STATE, GENDER, age_group), as.factor)) %>%
+  fastDummies::dummy_cols(select_columns = c("CLASS", "STATE", "GENDER", "age_group"), 
+                          remove_first_dummy = TRUE) %>%
+  dplyr::select(-Index,-STATE, -CLASS, -GENDER, -age_group)  # Remove the original categorical columns
+
+# View the modified data set with dummy variables
+head(autoClaims_dummies)
+
+```
+
+### Interaction and Polynomial Features
+```{r polynomial-fit}
+# Generate interaction terms and polynomial features
+autoClaims_dummies <- autoClaims_dummies %>%
+  mutate(
+    AGE_CLASS = AGE * as.numeric(CLASS_C11),  # Example interaction with one CLASS variable
+    AGE_GENDER = AGE * as.numeric(GENDER_M),
+    AGE_STATE = AGE * as.numeric(`STATE_STATE 02`),  # Example with one STATE variable
+    AGE_AGE = poly(AGE, 2, raw = TRUE)
+  )
+
+```
+
+## Advanced Modeling
+
+### Simple Linear Regression
+
+```{r simple-linear-regression}
+# Linear regression model with AGE as the predictor
+claimsModel <- lm(PAID ~ AGE, data = autoClaims)  
+summary(claimsModel)
+
+# Scatter plot with regression line
+ggplot(autoClaims, aes(x = AGE, y = PAID)) + 
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Scatter Plot with Regression Line",
+       x = "Age",
+       y = "Claims Paid")
+```
+
+### Log Transformation of PAID
+
+```{r log-transformation}
+# Log transformation of PAID
+autoClaims <- autoClaims %>%
+  mutate(logPaid = log(PAID))
+
+# Boxplot of logClaims by age group
+ggplot(autoClaims, aes(x = age_group, y = logPaid, color = age_group)) +
+  geom_boxplot() +
+  labs(title = "Claims Paid by Age Group (log)", x = "Age Group", y = "Claims Paid (log)")
+
+# Linear regression model with log-transformed PAID
+logClaimsModel <- lm(logPaid ~ AGE, data = autoClaims)  
+summary(logClaimsModel)
+
+```
+
+### Scatter Plot with Regression Line
+
+```{r scatter-plot}
+# Scatter plot with regression line
+ggplot(autoClaims, aes(x = AGE, y = logPaid, color = age_group)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Scatter Plot with Regression Line", x = "Age", y = "Claims Paid (log)")
+```
+
+### Correlation Analysis
+
+```{r correlation-analysis}
+cor_matrix <- autoClaims %>% 
+  dplyr::select(AGE, PAID) %>% 
+  cor()  # Correlation matrix for numerical variables
+
+print(cor_matrix)
+ggcorrplot(cor_matrix, lab = TRUE)  # Visualize the correlation matrix
+
+# Between AGE and PAID
+cor(autoClaims$AGE, autoClaims$PAID)
+
+# Correlation between AGE and log(PAID)
+cor(autoClaims$AGE, autoClaims$logPaid)
+```
+
+### Multivariate Regression
+
+```{r multivariate-regression}
+# Multivariate regression model including age group and other variables
+multivariateModel <- lm(logPaid ~ AGE + GENDER + CLASS + STATE + age_group, data = autoClaims)
+summary(multivariateModel)
+```
+
+### Linear Model with Interaction Term
+
+```{r interaction-model}
+# Interaction model between AGE and CLASS
+interactionModel <- lm(PAID ~ AGE * CLASS, data = autoClaims)
+summary(interactionModel)
+```
+
+### Decision Tree Model
+
+```{r decision-tree}
+# Decision tree model with adjusted parameters to find the best split
+treeModel <- rpart(PAID ~ AGE + GENDER + CLASS + STATE + age_group, 
+                   data = autoClaims, 
+                   control = rpart.control(minsplit = 10, cp = 0.006))
+rpart.plot(treeModel)
+```
+
+### Model Evaluation
+
+```{r model-evaluation}
+# Train-Test Split
+# Splitting the data into training and test sets for model evaluation
+set.seed(121)
+trainIndex <- createDataPartition(autoClaims_dummies$PAID, p = 0.8, list = FALSE)
+trainData <- autoClaims_dummies[trainIndex, ]
+testData <- autoClaims_dummies[-trainIndex, ]
+
+# Train a multivariate model on the training data
+trainModel <- lm(PAID ~ ., data = trainData)
+summary(trainModel)
+
+# Predict on the test data
+predictions <- predict(trainModel, newdata = testData)
+summary(predictions)
+# Calculate RMSE on the test set
+RMSE <- sqrt(mean((testData$PAID - predictions)^2))
+print(paste("Root Mean Squared Error (Test Set):", RMSE))
+```
+
+### Clustering Analysis
+
+```{r clustering-analysis}
+# Perform K-Means Clustering
+# K-Means clustering to identify groups of customers with similar claim amounts and demographics
+set.seed(123)
+
+# Perform K-means clustering using the cleaned dataset without the PAID column
+numeric_columns <- autoClaims_dummies %>%
+  select_if(is.numeric) %>%
+  dplyr::select(-PAID) 
+
+# Apply K-means clustering on the numeric columns
+kmeans_result <- kmeans(scale(numeric_columns), centers = 3)
+
+# Add the cluster assignments to the cleaned data set
+autoClaims_cleaned <- autoClaims_dummies
+autoClaims_cleaned$cluster <- as.factor(kmeans_result$cluster)
+
+# Visualize the clustering results to see how different age groups fall into clusters
+ggplot(autoClaims_cleaned, aes(x = AGE, y = PAID, color = cluster)) +
+  geom_point() +
+  labs(title = "Clustering Analysis of Claim Amounts", x = "Age", y = "Claim Amount")
+```
+
+### Visualization
+
+```{r visualization}
+# Bar Charts
+# Bar chart for average PAID by STATE
+state_avg <- autoClaims %>%
+  group_by(STATE) %>%
+  summarize(mean_paid = mean(PAID))
+
+ggplot(state_avg, aes(x = STATE, y = mean_paid)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Average Claim Amounts by State", x = "State", y = "Average Claim Amount")
+
+# Interaction Plots
+# Interaction plot between AGE, CLASS, and GENDER
+ggplot(autoClaims_cleaned, aes(x = AGE, y = PAID, color = CLASS_C11)) +
+  geom_point() +
+  facet_wrap(~GENDER_M) +
+  labs(title = "Interaction Effects between Age, Class, and Gender", x = "Age", y = "Claim Amount")
+
+# Age Group Comparison
+# Bar chart for average PAID by age group
+age_group_avg <- autoClaims %>%
+  group_by(age_group) %>%
+  summarize(mean_paid = mean(PAID))
+
+ggplot(age_group_avg, aes(x = age_group, y = mean_paid)) +
+  geom_bar(stat = "identity", fill = "green") +
+  labs(title = "Average Claim Amounts by Age Group", x = "Age Group", y = "Average Claim Amount")
+
+```
+ 
+ 
+## Key Findings:
+
+  - Age Group Analysis:
+      The analysis revealed that as age increases, so does the average claim amount, peaking with the Nineties age group.Specifically, average claim amounts by age group show an increase from the Fifties to the Nineties: Fifties ($1890.8), Sixties ($1776.3), Seventies ($1769.4), Eighties ($2049.0), and Nineties ($2153.9).
+
+  - State Analysis:
+      There was variability in average claim amounts by state, with some states (like State 12) showing notably higher averages compared to others. This suggests regional differences in claim amounts.
+
+  - Impact of Demographics and Policy Type:
+      Multivariate regression highlighted specific CLASS and STATE variables as significant. Notably, CLASS_C7B and STATE_STATE 12 emerged as significant predictors with positive coefficients of $344 and $611 respectively, indicating higher claim amounts associated with these categories.
+
+  - Correlation Analysis:
+      The correlation between age and paid claims was very low ($0.004188371), suggesting that while age group categories show a trend in claims, age as a continuous variable alone is not a strong predictor.
+
+  - Decision Tree Insights:
+      The decision tree analysis, highlighted `STATE` and `AGE` as critical nodes. For instance, the split at `AGE < 89` and specific states like `STATE_06` and `STATE_07` suggest that geographical and age factors are crucial in determining the claim amounts.
+  
+  - Clustering Analysis:
+      The k-means clustering identified groups of claims with similar characteristics. Three distinct clusters were observed, with the first cluster showing the highest claim amounts, particularly among older age groups. This might indicate specific risk profiles or policy characteristics within these clusters.
+  
+  - Log-Transformed Regression:
+      The log-transformed regression analysis further established the significance of age with a slight negative correlation with log-transformed claim amounts (`cor(autoClaims$AGE, autoClaims$logPaid) = -0.03644881`), which indicates that higher ages slightly decrease the claim amounts when transformed logarithmically, contrasting the findings in untransformed data.
+
+## Conclusion:
+
+The analysis effectively identifies several key variables influencing claim amounts in auto insurance data. Age groups, certain states, and specific insurance classes significantly impact claim sizes, with older age groups generally incurring higher claims. Regional variations also affect claims, as seen with the variance across different states.
